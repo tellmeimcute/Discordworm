@@ -1,1 +1,1 @@
-# DiscordDLLproxy
+# Discordworm
