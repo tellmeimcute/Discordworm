@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="DiscordDLLproxy.vcxproj" Id="d9f97b89-b58e-4449-8c87-56018fc4958e" />
+</Solution>
