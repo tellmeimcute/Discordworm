@@ -41,5 +41,5 @@ int WINAPI Pudge_WSASendTo(
 int WINAPI Pudge_sendto(SOCKET s, const char* buf, int len, int flags, const struct sockaddr* to, int tolen);
 int WINAPI Pudge_connect(SOCKET s, const sockaddr* name, int namelen);
 
-void HooksInit();
+void HooksAttach();
 void HooksDetach();

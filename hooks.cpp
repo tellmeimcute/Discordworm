@@ -1,14 +1,17 @@
 #include "hooks.h"
 #include <stdint.h>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <WS2tcpip.h>
 #include <WinSock2.h>
 #include <detours/detours.h>
 
-const char ProxyAddress[14]{ "127.0.0.1" };
-const uint16_t ProxyPort{ 2080 };
+char ProxyAddress[INET_ADDRSTRLEN]{ "127.0.0.1" };
+uint16_t ProxyPort{ 2080 };
 
-const uint8_t FakeUDPpayload[16]{};
-const int ReadWriteTimeout{ 15 };
+uint8_t FakeUDPpayload[16]{};
+int ReadWriteTimeout{ 15 };
 
 connect_t Real_connect = connect;
 sendto_t Real_sendto = sendto;
@@ -19,8 +22,9 @@ bool IsUDPSocket(SOCKET s)
 	int32_t sockOptVal{};
 	int32_t sockOptLen = sizeof(sockOptVal);
 
-	if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&sockOptVal, &sockOptLen) != 0)
+	if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&sockOptVal, &sockOptLen) != 0) {
 		return false;
+	}
 
 	return sockOptVal == SOCK_DGRAM;
 }
@@ -54,7 +58,7 @@ bool WaitForRead(SOCKET s, int timeoutSec)
 }
 
 int ConnectToProxy(SOCKET s) {
-	SOCKADDR_IN proxyAddr{};
+	sockaddr_in proxyAddr{};
 	proxyAddr.sin_family = AF_INET;
 	inet_pton(AF_INET, ProxyAddress, &proxyAddr.sin_addr);
 	proxyAddr.sin_port = htons(ProxyPort);
@@ -134,8 +138,9 @@ int SendSocks5Connect(SOCKET s, const struct sockaddr_in* targetAddr) {
 }
 
 int WINAPI Pudge_connect(SOCKET s, const sockaddr* name, int namelen) {
+	const struct sockaddr_in* target = reinterpret_cast<const struct sockaddr_in*>(name);
 
-	if (IsUDPSocket(s)) {
+	if (IsUDPSocket(s) || target->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
 		return Real_connect(s, name, namelen);
 	}
 
@@ -152,7 +157,7 @@ int WINAPI Pudge_connect(SOCKET s, const sockaddr* name, int namelen) {
 		return SOCKET_ERROR;
 	}
 
-	const struct sockaddr_in* target = reinterpret_cast<const struct sockaddr_in*>(name);
+	
 	return SendSocks5Connect(s, target);
 	
 }
@@ -195,13 +200,44 @@ int WINAPI Pudge_WSASendTo(
 	);
 }
 
-void HooksInit() {
+bool ParseConf() {
+	std::ifstream file("dwormconf.txt");
+	std::string line{};
+
+	if (!file.is_open()) {
+		return false;
+	}
+
+	while (getline(file, line)) {
+		std::stringstream ss(line);
+		std::string key, value;
+
+		if (getline(ss, key, '=') && getline(ss, value)) {
+			if (!key.compare("proxy_address")) {
+				memcpy(ProxyAddress, value.c_str(), sizeof(ProxyAddress));
+			}
+
+			if (!key.compare("proxy_port")) {
+				ProxyPort = static_cast<uint16_t>(std::stoi(value));
+			}
+		}
+	}
+
+	return true;
+}
+
+void HooksAttach() {
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)Real_WSASendTo, Pudge_WSASendTo);
 	//DetourAttach(&(PVOID&)Real_sendto, Pudge_sendto);
 	DetourAttach(&(PVOID&)Real_connect, Pudge_connect);
 	DetourTransactionCommit();
+
+	if (!ParseConf()) {
+		MessageBoxA(0, "failed to read config file dwormconf.txt", "Dworm Proxy", MB_ICONERROR);
+		ExitProcess(0);
+	}
 }
 
 void HooksDetach() {

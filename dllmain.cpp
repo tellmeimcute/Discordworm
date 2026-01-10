@@ -1,6 +1,7 @@
 ﻿#include "framework.h"
 #include "hooks.h"
 #include <stdint.h>
+#include <WS2tcpip.h>
 #include <detours/detours.h>
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -9,6 +10,13 @@ HMODULE OriginalDLL;
 
 extern "C" {
 	uintptr_t OrignalDWriteCreateFactory{ 0 };
+}
+
+
+void LoadOriginalLib() {
+    char path[MAX_PATH]{};
+    memcpy(path + GetSystemDirectoryA(path, MAX_PATH - 12), "\\DWrite.dll", 12);
+    OriginalDLL = LoadLibraryA(path);
 }
 
 BOOL APIENTRY DllMain(
@@ -21,27 +29,23 @@ BOOL APIENTRY DllMain(
 		return TRUE;
 	}
 
-    char path[MAX_PATH]{};
-
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
 
-        memcpy(path + GetSystemDirectoryA(path, MAX_PATH - 12), "\\DWrite.dll", 12);
-        OriginalDLL = LoadLibraryA(path);
-
+        LoadOriginalLib();
         if (OriginalDLL == NULL)
         {
-            MessageBoxA(0, "Cannot load original dll", "HIJACK", MB_ICONERROR);
+            MessageBoxA(0, "Cannot load original dll", "Dworm Proxy", MB_ICONERROR);
             return FALSE;
         }
 
         OrignalDWriteCreateFactory = (uintptr_t)GetProcAddress(OriginalDLL, "DWriteCreateFactory");
-
         DetourRestoreAfterWith();
-        HooksInit();
+        HooksAttach();
         break;
+
     case DLL_PROCESS_DETACH:
         FreeLibrary(OriginalDLL);
         HooksDetach();
