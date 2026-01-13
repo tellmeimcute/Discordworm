@@ -8,11 +8,21 @@
 // Файлы заголовков Windows
 #include <windows.h>
 #include <string>
-#include <WS2tcpip.h>
 #include <WinSock2.h>
+#include <WS2tcpip.h>
 
-extern IN_ADDR ProxyAddress;
-extern uint16_t ProxyPort;
-extern uint8_t FakeUDPpayload[16];
-extern int ReadWriteTimeout;
-extern bool ProxyMedia;
+//extern IN_ADDR ProxyAddress;
+//extern uint16_t ProxyPort;
+//extern uint8_t FakeUDPpayload[16];
+//extern int ReadWriteTimeout;
+//extern bool ProxyMedia;
+
+struct DwormConfig {
+	IN_ADDR ProxyAddress;
+	uint16_t ProxyPort;
+	uint8_t FakeUDPpayload[16];
+	int ReadWriteTimeout;
+	bool ProxyMedia;
+};
+
+extern DwormConfig config;

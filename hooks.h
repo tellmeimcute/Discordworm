@@ -1,6 +1,7 @@
 #pragma once
 
 #include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <detours/detours.h>
 
 using sendto_t = int (WINAPI*)(

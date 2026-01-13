@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <detours/detours.h>
 
@@ -15,11 +16,13 @@ extern "C" {
 	uintptr_t OrignalDWriteCreateFactory{ 0 };
 }
 
-IN_ADDR ProxyAddress{};
-uint16_t ProxyPort{};
-uint8_t FakeUDPpayload[16]{};
-int ReadWriteTimeout{ 15 };
-bool ProxyMedia{ false };
+//IN_ADDR ProxyAddress{};
+//uint16_t ProxyPort{};
+//uint8_t FakeUDPpayload[16]{};
+//int ReadWriteTimeout{ 15 };
+//bool ProxyMedia{ false };
+
+DwormConfig config{};
 
 void LoadOriginalLib() {
     char path[MAX_PATH]{};
@@ -35,21 +38,26 @@ bool ParseConf() {
         return false;
     }
 
+    config.ReadWriteTimeout = 5;
+
     while (getline(file, line)) {
         std::stringstream ss(line);
         std::string key, value;
 
         if (getline(ss, key, '=') && getline(ss, value)) {
             if (!key.compare("proxy_address")) {
-                inet_pton(AF_INET, value.c_str(), &ProxyAddress);
+                //inet_pton(AF_INET, value.c_str(), &ProxyAddress);
+                inet_pton(AF_INET, value.c_str(), &config.ProxyAddress);
             }
 
             if (!key.compare("proxy_port")) {
-                ProxyPort = htons(static_cast<uint16_t>(std::stoi(value)));
+                //ProxyPort = htons(static_cast<uint16_t>(std::stoi(value)));
+                config.ProxyPort = htons(static_cast<uint16_t>(std::stoi(value)));
             }
 
             if (!key.compare("proxy_udp")) {
-                ProxyMedia = static_cast<bool>(std::stoi(value));
+                //ProxyMedia = static_cast<bool>(std::stoi(value));
+                config.ProxyMedia = static_cast<bool>(std::stoi(value));
             }
         }
     }

@@ -5,8 +5,8 @@
 #include <set>
 #include <map>
 #include <vector>
-#include <WS2tcpip.h>
 #include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <detours/detours.h>
 
 connect_t Real_connect = connect;
@@ -62,8 +62,8 @@ bool WaitForRead(SOCKET s, int timeoutSec)
 int ConnectToProxy(SOCKET s) {
 	sockaddr_in proxyAddr{};
 	proxyAddr.sin_family = AF_INET;
-	proxyAddr.sin_addr = ProxyAddress;
-	proxyAddr.sin_port = ProxyPort;
+	proxyAddr.sin_addr = config.ProxyAddress;
+	proxyAddr.sin_port = config.ProxyPort;
 
 	int result = Real_connect(s, reinterpret_cast<sockaddr*>(&proxyAddr), sizeof(proxyAddr));
 
@@ -71,7 +71,7 @@ int ConnectToProxy(SOCKET s) {
 		return result;
 	}
 
-	if (WaitForWrite(s, ReadWriteTimeout)) {
+	if (WaitForWrite(s, config.ReadWriteTimeout)) {
 		return ERROR_SUCCESS;
 	}
 
@@ -89,7 +89,7 @@ int SendSocks5Handshake(SOCKET s) {
 
 	uint8_t response[2]{};
 
-	WaitForRead(s, ReadWriteTimeout);
+	WaitForRead(s, config.ReadWriteTimeout);
 
 	if (recv(s, reinterpret_cast<char*>(response), sizeof(response), 0) <= 0) {
 		return SOCKET_ERROR;
@@ -103,7 +103,7 @@ int SendSocks5Handshake(SOCKET s) {
 		return ERROR_SUCCESS;
 	}
 
-	if (WaitForWrite(s, ReadWriteTimeout)) {
+	if (WaitForWrite(s, config.ReadWriteTimeout)) {
 		return ERROR_SUCCESS;
 	}
 
@@ -117,7 +117,7 @@ int SendSocks5Connect(SOCKET s, const struct sockaddr_in* targetAddr) {
 	memcpy(connectRequest + 4, &targetAddr->sin_addr, 4);
 	memcpy(connectRequest + 8, &targetAddr->sin_port, 2);
 
-	WaitForWrite(s, ReadWriteTimeout);
+	WaitForWrite(s, config.ReadWriteTimeout);
 
 	if (send(s, reinterpret_cast<const char*>(connectRequest), sizeof(connectRequest), 0) == SOCKET_ERROR) {
 		return SOCKET_ERROR;
@@ -125,7 +125,7 @@ int SendSocks5Connect(SOCKET s, const struct sockaddr_in* targetAddr) {
 
 	uint8_t connectResponse[10]{};
 
-	WaitForRead(s, ReadWriteTimeout);
+	WaitForRead(s, config.ReadWriteTimeout);
 
 	if (recv(s, reinterpret_cast<char*>(connectResponse), sizeof(connectResponse), 0) <= 0) {
 		return SOCKET_ERROR;
@@ -140,16 +140,16 @@ int SendSocks5Connect(SOCKET s, const struct sockaddr_in* targetAddr) {
 }
 
 int SendSocks5Associate(udp_association_t &assoc) {
-	uint8_t connectRequest[]{ 0x05, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+	uint8_t connectRequest[10]{ 0x05, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-	WaitForWrite(assoc.controlSocket, ReadWriteTimeout);
+	WaitForWrite(assoc.controlSocket, config.ReadWriteTimeout);
 
 	if (send(assoc.controlSocket, reinterpret_cast<const char*>(connectRequest), sizeof(connectRequest), 0) == SOCKET_ERROR) {
 		return SOCKET_ERROR;
 	}
 
 	uint8_t connectResponse[10]{};
-	WaitForRead(assoc.controlSocket, ReadWriteTimeout);
+	WaitForRead(assoc.controlSocket, config.ReadWriteTimeout);
 
 	if (recv(assoc.controlSocket, reinterpret_cast<char*>(connectResponse), sizeof(connectResponse), 0) <= 0) {
 		return SOCKET_ERROR;
@@ -165,7 +165,7 @@ int SendSocks5Associate(udp_association_t &assoc) {
 
 	assoc.is_initialized = true;
 
-	return 0;
+	return ERROR_SUCCESS;
 }
 
 int InitSocksAssociation(udp_association_t& assoc) {
@@ -197,7 +197,8 @@ int InitSocksAssociation(udp_association_t& assoc) {
 void EncapsulateSocks5Datagram(WSABUF* target, char* buf, int len, const sockaddr* lpTo)
 {
 	target->len = len + 10;
-	target->buf = (char*)malloc(target->len);
+	//target->buf = (char*)malloc(target->len);
+	target->buf = new char[target->len];
 
 	target->buf[0] = 0;
 	target->buf[1] = 0;
@@ -212,7 +213,7 @@ void EncapsulateSocks5Datagram(WSABUF* target, char* buf, int len, const sockadd
 
 void ExtractSockAddr(char* buf, sockaddr* target)
 {
-	const struct sockaddr_in* addr = reinterpret_cast<const struct sockaddr_in*>(target);
+	struct sockaddr_in* addr = reinterpret_cast<struct sockaddr_in*>(target);
 	memcpy((void*)&addr->sin_addr.s_addr, &buf[4], sizeof(addr->sin_addr.s_addr)); //ip addr
 	memcpy((void*)&addr->sin_port, &buf[8], sizeof(addr->sin_port)); // port
 }
@@ -262,7 +263,7 @@ int WINAPI Pudge_closesocket(SOCKET s) {
 int WINAPI Pudge_sendto(SOCKET s, const char* buf, int len, int flags, const struct sockaddr* to, int tolen)
 {
 	if (len == 74) {
-		Real_sendto(s, reinterpret_cast<const char*>(FakeUDPpayload), sizeof(FakeUDPpayload), flags, to, tolen);
+		Real_sendto(s, reinterpret_cast<const char*>(config.FakeUDPpayload), sizeof(config.FakeUDPpayload), flags, to, tolen);
 	}
 
 	return Real_sendto(s, buf, len, flags, to, tolen);
@@ -280,9 +281,10 @@ int WINAPI Pudge_WSASendTo(
 	LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 )
 {
-	if (!ProxyMedia) {
+	if (!config.ProxyMedia) {
+		// 74 байта размер пейлода DISCORD IP DISCOVERY
 		if (lpBuffers->len == 74) {
-			Real_sendto(s, reinterpret_cast<const char*>(FakeUDPpayload), sizeof(FakeUDPpayload), 0, lpTo, iTolen);
+			Real_sendto(s, reinterpret_cast<const char*>(config.FakeUDPpayload), sizeof(config.FakeUDPpayload), 0, lpTo, iTolen);
 		}
 
 		return Real_WSASendTo(
@@ -309,7 +311,7 @@ int WINAPI Pudge_WSASendTo(
 			}
 		}
 		else {
-			currAssoc = activeAssociations[s];
+			currAssoc = activeAssociations.at(s);
 		}
 	}
 
@@ -328,7 +330,9 @@ int WINAPI Pudge_WSASendTo(
 		lpCompletionRoutine
 	);
 
-	free(destBuff.buf);
+	//free(destBuff.buf);
+	delete[] destBuff.buf;
+
 	return status;
 }
 
@@ -344,7 +348,7 @@ int WINAPI Pudge_WSARecvFrom(
 	LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 )
 {
-	if (!ProxyMedia) {
+	if (!config.ProxyMedia) {
 		return Real_WSARecvFrom(
 			s,
 			lpBuffers,
@@ -375,6 +379,7 @@ int WINAPI Pudge_WSARecvFrom(
 		lpCompletionRoutine
 	);
 
+	std::shared_lock<std::shared_mutex> read_lock(SockMtx);
 	if (status == ERROR_SUCCESS && activeAssociations.contains(s)) {
 		//Encapsulated header is 10 bytes
 		if (*lpNumberOfBytesRecvd < 10) {
