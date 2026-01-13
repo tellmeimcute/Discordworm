@@ -1,28 +1,30 @@
 #include "hooks.h"
+#include "framework.h"
 #include <stdint.h>
-#include <fstream>
-#include <sstream>
-#include <string>
+#include <shared_mutex>
+#include <set>
+#include <map>
+#include <vector>
 #include <WS2tcpip.h>
 #include <WinSock2.h>
 #include <detours/detours.h>
 
-char ProxyAddress[INET_ADDRSTRLEN]{ "127.0.0.1" };
-uint16_t ProxyPort{ 2080 };
-
-uint8_t FakeUDPpayload[16]{};
-int ReadWriteTimeout{ 15 };
-
 connect_t Real_connect = connect;
 sendto_t Real_sendto = sendto;
 WSASendTo_t Real_WSASendTo = WSASendTo;
+WSARecvFrom_t Real_WSARecvFrom = WSARecvFrom;
+bint_t Real_bind = bind;
+closesocket_t Real_closesocket = closesocket;
+
+std::shared_mutex SockMtx{};
+std::map<SOCKET, udp_association_t> activeAssociations{};
 
 bool IsUDPSocket(SOCKET s)
 {
 	int32_t sockOptVal{};
 	int32_t sockOptLen = sizeof(sockOptVal);
 
-	if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&sockOptVal, &sockOptLen) != 0) {
+	if (getsockopt(s, SOL_SOCKET, SO_TYPE, reinterpret_cast<char*>(&sockOptVal), &sockOptLen) != 0) {
 		return false;
 	}
 
@@ -60,10 +62,11 @@ bool WaitForRead(SOCKET s, int timeoutSec)
 int ConnectToProxy(SOCKET s) {
 	sockaddr_in proxyAddr{};
 	proxyAddr.sin_family = AF_INET;
-	inet_pton(AF_INET, ProxyAddress, &proxyAddr.sin_addr);
-	proxyAddr.sin_port = htons(ProxyPort);
+	proxyAddr.sin_addr = ProxyAddress;
+	proxyAddr.sin_port = ProxyPort;
 
-	int result = Real_connect(s, (struct sockaddr*)&proxyAddr, sizeof(proxyAddr));
+	int result = Real_connect(s, reinterpret_cast<sockaddr*>(&proxyAddr), sizeof(proxyAddr));
+
 	if (result == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
 		return result;
 	}
@@ -78,9 +81,9 @@ int ConnectToProxy(SOCKET s) {
 }
 
 int SendSocks5Handshake(SOCKET s) {
-	uint8_t request[3]{ 0x05, 0x01, 0x00 };
+	const uint8_t request[3]{ 0x05, 0x01, 0x00 };
 
-	if (send(s, (const char*)request, sizeof(request), 0) == SOCKET_ERROR) {
+	if (send(s, reinterpret_cast<const char*>(request), sizeof(request), 0) == SOCKET_ERROR) {
 		return SOCKET_ERROR;
 	}
 
@@ -88,7 +91,7 @@ int SendSocks5Handshake(SOCKET s) {
 
 	WaitForRead(s, ReadWriteTimeout);
 
-	if (recv(s, (char*)response, sizeof(response), 0) <= 0) {
+	if (recv(s, reinterpret_cast<char*>(response), sizeof(response), 0) <= 0) {
 		return SOCKET_ERROR;
 	}
 	
@@ -108,7 +111,6 @@ int SendSocks5Handshake(SOCKET s) {
 	return SOCKET_ERROR;
 }
 
-
 int SendSocks5Connect(SOCKET s, const struct sockaddr_in* targetAddr) {
 
 	uint8_t connectRequest[10]{ 0x05, 0x01, 0x00, 0x01 };
@@ -117,7 +119,7 @@ int SendSocks5Connect(SOCKET s, const struct sockaddr_in* targetAddr) {
 
 	WaitForWrite(s, ReadWriteTimeout);
 
-	if (send(s, (const char*)connectRequest, sizeof(connectRequest), 0) == SOCKET_ERROR) {
+	if (send(s, reinterpret_cast<const char*>(connectRequest), sizeof(connectRequest), 0) == SOCKET_ERROR) {
 		return SOCKET_ERROR;
 	}
 
@@ -125,7 +127,7 @@ int SendSocks5Connect(SOCKET s, const struct sockaddr_in* targetAddr) {
 
 	WaitForRead(s, ReadWriteTimeout);
 
-	if (recv(s, (char*)connectResponse, sizeof(connectResponse), 0) <= 0) {
+	if (recv(s, reinterpret_cast<char*>(connectResponse), sizeof(connectResponse), 0) <= 0) {
 		return SOCKET_ERROR;
 	}
 
@@ -135,6 +137,84 @@ int SendSocks5Connect(SOCKET s, const struct sockaddr_in* targetAddr) {
 
 	WSASetLastError(WSAEWOULDBLOCK);
 	return SOCKET_ERROR;
+}
+
+int SendSocks5Associate(udp_association_t &assoc) {
+	uint8_t connectRequest[]{ 0x05, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+
+	WaitForWrite(assoc.controlSocket, ReadWriteTimeout);
+
+	if (send(assoc.controlSocket, reinterpret_cast<const char*>(connectRequest), sizeof(connectRequest), 0) == SOCKET_ERROR) {
+		return SOCKET_ERROR;
+	}
+
+	uint8_t connectResponse[10]{};
+	WaitForRead(assoc.controlSocket, ReadWriteTimeout);
+
+	if (recv(assoc.controlSocket, reinterpret_cast<char*>(connectResponse), sizeof(connectResponse), 0) <= 0) {
+		return SOCKET_ERROR;
+	}
+
+	if (connectResponse[1] != 0x00) {
+		return SOCKET_ERROR;
+	}
+
+	assoc.proxyAddr.sin_family = AF_INET;
+	memcpy(&assoc.proxyAddr.sin_addr, connectResponse + 4, 4);
+	memcpy(&assoc.proxyAddr.sin_port, connectResponse + 8, 2);
+
+	assoc.is_initialized = true;
+
+	return 0;
+}
+
+int InitSocksAssociation(udp_association_t& assoc) {
+	assoc.controlSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+	if (assoc.controlSocket == INVALID_SOCKET) {
+		return SOCKET_ERROR;
+	}
+
+	// SET NON BLOCKING MODE
+	u_long mode = true;
+	ioctlsocket(assoc.controlSocket, FIONBIO, &mode);
+
+	if (ConnectToProxy(assoc.controlSocket) != ERROR_SUCCESS) {
+		return SOCKET_ERROR;
+	}
+
+	if (SendSocks5Handshake(assoc.controlSocket) != ERROR_SUCCESS) {
+		return SOCKET_ERROR;
+	}
+
+	if (SendSocks5Associate(assoc) != ERROR_SUCCESS) {
+		return SOCKET_ERROR;
+	}
+
+	return 0;
+}
+
+void EncapsulateSocks5Datagram(WSABUF* target, char* buf, int len, const sockaddr* lpTo)
+{
+	target->len = len + 10;
+	target->buf = (char*)malloc(target->len);
+
+	target->buf[0] = 0;
+	target->buf[1] = 0;
+	target->buf[2] = 0;
+	target->buf[3] = 1;
+
+	const struct sockaddr_in* addr = reinterpret_cast<const struct sockaddr_in*>(lpTo);
+	memcpy(&target->buf[4], &addr->sin_addr.s_addr, sizeof(addr->sin_addr.s_addr)); //ip addr == 4 byte
+	memcpy(&target->buf[8], &addr->sin_port, sizeof(addr->sin_port)); // port == 2 byte
+	memcpy(&target->buf[10], buf, len);
+}
+
+void ExtractSockAddr(char* buf, sockaddr* target)
+{
+	const struct sockaddr_in* addr = reinterpret_cast<const struct sockaddr_in*>(target);
+	memcpy((void*)&addr->sin_addr.s_addr, &buf[4], sizeof(addr->sin_addr.s_addr)); //ip addr
+	memcpy((void*)&addr->sin_port, &buf[8], sizeof(addr->sin_port)); // port
 }
 
 int WINAPI Pudge_connect(SOCKET s, const sockaddr* name, int namelen) {
@@ -162,10 +242,27 @@ int WINAPI Pudge_connect(SOCKET s, const sockaddr* name, int namelen) {
 	
 }
 
+int WINAPI Pudge_bind(SOCKET s, const sockaddr* addr, int namelen) {
+	return Real_bind(s, addr, namelen);
+}
+
+int WINAPI Pudge_closesocket(SOCKET s) {
+
+	{
+		std::unique_lock<std::shared_mutex> write_lock(SockMtx);
+		if (activeAssociations.contains(s)) {
+			Real_closesocket(activeAssociations[s].controlSocket);
+			activeAssociations.erase(s);
+		}
+	}
+
+	return Real_closesocket(s);
+}
+
 int WINAPI Pudge_sendto(SOCKET s, const char* buf, int len, int flags, const struct sockaddr* to, int tolen)
 {
 	if (len == 74) {
-		Real_sendto(s, (const char*)FakeUDPpayload, sizeof(FakeUDPpayload), flags, to, tolen);
+		Real_sendto(s, reinterpret_cast<const char*>(FakeUDPpayload), sizeof(FakeUDPpayload), flags, to, tolen);
 	}
 
 	return Real_sendto(s, buf, len, flags, to, tolen);
@@ -183,68 +280,134 @@ int WINAPI Pudge_WSASendTo(
 	LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 )
 {
-	if (lpBuffers->len == 74) {
-		Real_sendto(s, (const char*)FakeUDPpayload, sizeof(FakeUDPpayload), 0, lpTo, iTolen);
+	if (!ProxyMedia) {
+		if (lpBuffers->len == 74) {
+			Real_sendto(s, reinterpret_cast<const char*>(FakeUDPpayload), sizeof(FakeUDPpayload), 0, lpTo, iTolen);
+		}
+
+		return Real_WSASendTo(
+			s,
+			lpBuffers,
+			dwBufferCount,
+			lpNumberOfBytesSent,
+			dwFlags,
+			lpTo,
+			iTolen,
+			lpOverlapped,
+			lpCompletionRoutine
+		);
 	}
 
-	return Real_WSASendTo(
-		s,
-		lpBuffers,
-		dwBufferCount,
-		lpNumberOfBytesSent,
-		dwFlags,
-		lpTo,
-		iTolen,
-		lpOverlapped,
-		lpCompletionRoutine
-	);
-}
-
-bool ParseConf() {
-	std::ifstream file("dwormconf.txt");
-	std::string line{};
-
-	if (!file.is_open()) {
-		return false;
-	}
-
-	while (getline(file, line)) {
-		std::stringstream ss(line);
-		std::string key, value;
-
-		if (getline(ss, key, '=') && getline(ss, value)) {
-			if (!key.compare("proxy_address")) {
-				memcpy(ProxyAddress, value.c_str(), sizeof(ProxyAddress));
+	//const struct sockaddr_in* addr = reinterpret_cast<const struct sockaddr_in*>(lpTo);
+	udp_association_t currAssoc{};
+	{
+		std::unique_lock<std::shared_mutex> write_lock(SockMtx);
+		if (IsUDPSocket(s) && !activeAssociations.contains(s)) {
+			InitSocksAssociation(currAssoc);
+			{
+				activeAssociations.insert(std::pair<SOCKET, udp_association_t>(s, currAssoc));
 			}
-
-			if (!key.compare("proxy_port")) {
-				ProxyPort = static_cast<uint16_t>(std::stoi(value));
-			}
+		}
+		else {
+			currAssoc = activeAssociations[s];
 		}
 	}
 
-	return true;
+	WSABUF destBuff;
+	EncapsulateSocks5Datagram(&destBuff, lpBuffers->buf, lpBuffers->len, lpTo);
+
+	auto status = Real_WSASendTo(
+		s,
+		&destBuff,
+		1,
+		lpNumberOfBytesSent,
+		0,
+		reinterpret_cast<const sockaddr*>(&currAssoc.proxyAddr),
+		sizeof(currAssoc.proxyAddr),
+		lpOverlapped,
+		lpCompletionRoutine
+	);
+
+	free(destBuff.buf);
+	return status;
+}
+
+int WINAPI Pudge_WSARecvFrom(
+	SOCKET s,
+	LPWSABUF lpBuffers,
+	DWORD dwBufferCount,
+	LPDWORD lpNumberOfBytesRecvd,
+	LPDWORD lpFlags,
+	sockaddr* lpFrom,
+	LPINT lpFromlen,
+	LPWSAOVERLAPPED lpOverlapped,
+	LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+)
+{
+	if (!ProxyMedia) {
+		return Real_WSARecvFrom(
+			s,
+			lpBuffers,
+			dwBufferCount,
+			lpNumberOfBytesRecvd,
+			lpFlags,
+			lpFrom,
+			lpFromlen,
+			lpOverlapped,
+			lpCompletionRoutine
+		);
+	}
+
+	DWORD received = 0;
+	if (lpNumberOfBytesRecvd == NULL) {
+		lpNumberOfBytesRecvd = &received;
+	}
+		
+	auto status = Real_WSARecvFrom(
+		s,
+		lpBuffers,
+		dwBufferCount,
+		lpNumberOfBytesRecvd,
+		lpFlags,
+		lpFrom,
+		lpFromlen,
+		lpOverlapped,
+		lpCompletionRoutine
+	);
+
+	if (status == ERROR_SUCCESS && activeAssociations.contains(s)) {
+		//Encapsulated header is 10 bytes
+		if (*lpNumberOfBytesRecvd < 10) {
+			return SOCKET_ERROR;
+		}
+
+		ExtractSockAddr(lpBuffers->buf, lpFrom);
+		memmove(lpBuffers->buf, &lpBuffers->buf[10], *lpNumberOfBytesRecvd -= 10);
+	}
+
+	return status;
 }
 
 void HooksAttach() {
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)Real_WSASendTo, Pudge_WSASendTo);
+	DetourAttach(&(PVOID&)Real_WSARecvFrom, Pudge_WSARecvFrom);
 	//DetourAttach(&(PVOID&)Real_sendto, Pudge_sendto);
+	DetourAttach(&(PVOID&)Real_bind, Pudge_bind);
+	DetourAttach(&(PVOID&)Real_closesocket, Pudge_closesocket);
 	DetourAttach(&(PVOID&)Real_connect, Pudge_connect);
 	DetourTransactionCommit();
-
-	if (!ParseConf()) {
-		MessageBoxA(0, "failed to read config file dwormconf.txt", "Dworm Proxy", MB_ICONERROR);
-		ExitProcess(0);
-	}
 }
 
 void HooksDetach() {
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourDetach(&(PVOID&)Real_WSASendTo, Pudge_WSASendTo);
+	DetourDetach(&(PVOID&)Real_WSARecvFrom, Pudge_WSARecvFrom);
 	//DetourDetach(&(PVOID&)Real_sendto, Pudge_sendto);
+	DetourDetach(&(PVOID&)Real_bind, Pudge_bind);
+	DetourDetach(&(PVOID&)Real_closesocket, Pudge_closesocket);
 	DetourDetach(&(PVOID&)Real_connect, Pudge_connect);
 	DetourTransactionCommit();
 }

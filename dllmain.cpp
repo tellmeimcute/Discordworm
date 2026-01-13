@@ -1,6 +1,9 @@
 ﻿#include "framework.h"
 #include "hooks.h"
 #include <stdint.h>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <WS2tcpip.h>
 #include <detours/detours.h>
 
@@ -12,11 +15,46 @@ extern "C" {
 	uintptr_t OrignalDWriteCreateFactory{ 0 };
 }
 
+IN_ADDR ProxyAddress{};
+uint16_t ProxyPort{};
+uint8_t FakeUDPpayload[16]{};
+int ReadWriteTimeout{ 15 };
+bool ProxyMedia{ false };
 
 void LoadOriginalLib() {
     char path[MAX_PATH]{};
     memcpy(path + GetSystemDirectoryA(path, MAX_PATH - 12), "\\DWrite.dll", 12);
     OriginalDLL = LoadLibraryA(path);
+}
+
+bool ParseConf() {
+    std::ifstream file("dwormconf.txt");
+    std::string line{};
+
+    if (!file.is_open()) {
+        return false;
+    }
+
+    while (getline(file, line)) {
+        std::stringstream ss(line);
+        std::string key, value;
+
+        if (getline(ss, key, '=') && getline(ss, value)) {
+            if (!key.compare("proxy_address")) {
+                inet_pton(AF_INET, value.c_str(), &ProxyAddress);
+            }
+
+            if (!key.compare("proxy_port")) {
+                ProxyPort = htons(static_cast<uint16_t>(std::stoi(value)));
+            }
+
+            if (!key.compare("proxy_udp")) {
+                ProxyMedia = static_cast<bool>(std::stoi(value));
+            }
+        }
+    }
+
+    return true;
 }
 
 BOOL APIENTRY DllMain(
@@ -42,6 +80,12 @@ BOOL APIENTRY DllMain(
         }
 
         OrignalDWriteCreateFactory = (uintptr_t)GetProcAddress(OriginalDLL, "DWriteCreateFactory");
+
+        if (!ParseConf()) {
+            MessageBoxA(0, "failed to read config file dwormconf.txt", "Dworm Proxy", MB_ICONERROR);
+            ExitProcess(0);
+        }
+
         DetourRestoreAfterWith();
         HooksAttach();
         break;
