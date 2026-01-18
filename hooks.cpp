@@ -284,7 +284,7 @@ int WINAPI Pudge_WSASendTo(
 	if (!config.ProxyMedia) {
 		// 74 байта размер пейлода DISCORD IP DISCOVERY
 		if (lpBuffers->len == 74) {
-			Real_sendto(s, reinterpret_cast<const char*>(config.FakeUDPpayload), sizeof(config.FakeUDPpayload), 0, lpTo, iTolen);
+			Real_sendto(s, reinterpret_cast<const char*>(config.FakeUDPpayload), config.FakePayloadSize, 0, lpTo, iTolen);
 		}
 
 		return Real_WSASendTo(
@@ -300,15 +300,17 @@ int WINAPI Pudge_WSASendTo(
 		);
 	}
 
-	//const struct sockaddr_in* addr = reinterpret_cast<const struct sockaddr_in*>(lpTo);
 	udp_association_t currAssoc{};
 	{
 		std::unique_lock<std::shared_mutex> write_lock(SockMtx);
 		if (IsUDPSocket(s) && !activeAssociations.contains(s)) {
-			InitSocksAssociation(currAssoc);
-			{
-				activeAssociations.insert(std::pair<SOCKET, udp_association_t>(s, currAssoc));
+			int status = InitSocksAssociation(currAssoc);
+			if (status == SOCKET_ERROR) {
+				Real_closesocket(currAssoc.controlSocket);
+				WSASetLastError(WSAEHOSTUNREACH);
+				return SOCKET_ERROR;
 			}
+			activeAssociations.insert(std::pair<SOCKET, udp_association_t>(s, currAssoc));
 		}
 		else {
 			currAssoc = activeAssociations.at(s);
@@ -366,7 +368,9 @@ int WINAPI Pudge_WSARecvFrom(
 	if (lpNumberOfBytesRecvd == NULL) {
 		lpNumberOfBytesRecvd = &received;
 	}
-		
+	
+	std::shared_lock<std::shared_mutex> read_lock(SockMtx);
+
 	auto status = Real_WSARecvFrom(
 		s,
 		lpBuffers,
@@ -379,7 +383,6 @@ int WINAPI Pudge_WSARecvFrom(
 		lpCompletionRoutine
 	);
 
-	std::shared_lock<std::shared_mutex> read_lock(SockMtx);
 	if (status == ERROR_SUCCESS && activeAssociations.contains(s)) {
 		//Encapsulated header is 10 bytes
 		if (*lpNumberOfBytesRecvd < 10) {

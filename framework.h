@@ -20,9 +20,10 @@
 struct DwormConfig {
 	IN_ADDR ProxyAddress;
 	uint16_t ProxyPort;
-	uint8_t FakeUDPpayload[16];
 	int ReadWriteTimeout;
 	bool ProxyMedia;
+	uint8_t FakeUDPpayload[256];
+	size_t FakePayloadSize;
 };
 
 extern DwormConfig config;
