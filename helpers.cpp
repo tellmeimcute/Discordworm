@@ -44,6 +44,11 @@ bool parse_hex_str(const char* s, uint8_t* pbuf, size_t* size)
 }
 
 bool ParseConf(DwormConfig& config) {
+
+    config.ReadWriteTimeout = 5;
+    config.ProxyMedia = false;
+    config.FakePayloadSize = sizeof(config.FakeUDPpayload);
+
     static const std::unordered_map<std::string, std::function<bool(std::string_view valuev)>> handlers = {
         {"proxy_address", [&config](std::string_view valuev) -> bool {
             return inet_pton(AF_INET, valuev.data(), &config.ProxyAddress) > 0;
@@ -80,10 +85,6 @@ bool ParseConf(DwormConfig& config) {
     if (!file.is_open()) {
         return false;
     }
-
-    config.ReadWriteTimeout = 5;
-    config.ProxyMedia = false;
-    config.FakePayloadSize = sizeof(config.FakeUDPpayload);
 
     while (getline(file, line)) {
         std::string_view view = line;
