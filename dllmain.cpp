@@ -1,8 +1,10 @@
 ﻿#include "framework.h"
 #include "hooks.h"
+#include <unordered_map>
+#include <functional>
+#include <charconv>
 #include <stdint.h>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <WinSock2.h>
 #include <WS2tcpip.h>
@@ -61,6 +63,36 @@ void LoadOriginalLib() {
 }
 
 bool ParseConf() {
+    static const std::unordered_map<std::string, std::function<bool(std::string_view valuev)>> handlers = {
+        {"proxy_address", [](std::string_view valuev) -> bool {
+            return inet_pton(AF_INET, valuev.data(), &config.ProxyAddress) > 0;
+        }},
+        {"proxy_port", [](std::string_view valuev) -> bool {
+            int port{0};
+            auto result = std::from_chars(valuev.data(), valuev.data() + valuev.size(), port);
+
+            if (result.ec != std::errc() || port < 0 || port > 65535) return false;
+            config.ProxyPort = htons(static_cast<uint16_t>(port));
+            return true;
+        }},
+        {"proxy_udp", [](std::string_view valuev) -> bool {
+            if (valuev == "true" || valuev == "1") {
+                config.ProxyMedia = true;
+            }
+            if (valuev == "false" || valuev == "0") {
+                config.ProxyMedia = false;
+            }
+            return true;
+        }},
+        {"fake_udp_payload", [](std::string_view valuev) -> bool {
+            if (valuev.size() < 2) return false;
+            if (valuev.data()[0] != '0' || valuev.data()[1] != 'x') {
+                return false;
+            }
+            return parse_hex_str(valuev.data() + 2, config.FakeUDPpayload, &config.FakePayloadSize);
+        }}
+    };
+
     std::ifstream file("dwormconf.txt");
     std::string line{};
 
@@ -69,31 +101,22 @@ bool ParseConf() {
     }
 
     config.ReadWriteTimeout = 5;
+    config.ProxyMedia = false;
     config.FakePayloadSize = sizeof(config.FakeUDPpayload);
 
     while (getline(file, line)) {
-        std::stringstream ss(line);
-        std::string key, value;
+        std::string_view view = line;
+        size_t delimiter_pos = view.find('=');
 
-        if (getline(ss, key, '=') && getline(ss, value)) {
-            if (!key.compare("proxy_address")) {
-                inet_pton(AF_INET, value.c_str(), &config.ProxyAddress);
-            }
+        if (delimiter_pos == std::string_view::npos) continue;
 
-            if (!key.compare("proxy_port")) {
-                config.ProxyPort = htons(static_cast<uint16_t>(std::stoi(value)));
-            }
+        auto key = view.substr(0, delimiter_pos);
+        auto value = view.substr(delimiter_pos + 1);
 
-            if (!key.compare("proxy_udp")) {
-                config.ProxyMedia = static_cast<bool>(std::stoi(value));
-            }
-
-            if (!key.compare("fake_udp_payload")) {
-                if (value.c_str()[0] == '0' && value.c_str()[1] == 'x') {
-                    if (!parse_hex_str(value.c_str() + 2, config.FakeUDPpayload, &config.FakePayloadSize)) {
-                        return false;
-                    }
-                }
+        std::string key_str = static_cast<std::string>(key);
+        if (handlers.contains(key_str)) {
+            if (!handlers.at(key_str)(value)) {
+                return false;
             }
         }
     }
@@ -120,7 +143,7 @@ BOOL APIENTRY DllMain(
         if (OriginalDLL == NULL)
         {
             MessageBoxA(0, "Cannot load original dll", "Dworm Proxy", MB_ICONERROR);
-            return FALSE;
+            return false;
         }
 
         OrignalDWriteCreateFactory = (uintptr_t)GetProcAddress(OriginalDLL, "DWriteCreateFactory");
