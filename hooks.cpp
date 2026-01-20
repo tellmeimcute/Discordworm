@@ -281,10 +281,15 @@ int WINAPI Pudge_WSASendTo(
 	LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 )
 {
-	if (!config.ProxyMedia) {
-		// 74 байта размер пейлода DISCORD IP DISCOVERY
-		if (lpBuffers->len == 74) {
-			Real_sendto(s, reinterpret_cast<const char*>(config.FakeUDPpayload), config.FakePayloadSize, 0, lpTo, iTolen);
+	// UDP MODE 2 - SEND FAKE
+	// UDP MODE 1 - PROXY
+	// UDP MODE 0 - DONT TOUCH
+	// DISCORD IP DISCOVERY payload = 74 byte
+	if (config.UDPMode != 1) {
+		if (config.UDPMode == 2) {
+			if (lpBuffers->len == 74) {
+				Real_sendto(s, reinterpret_cast<const char*>(config.FakeUDPpayload), static_cast<int>(config.FakePayloadSize), 0, lpTo, iTolen);
+			}
 		}
 
 		return Real_WSASendTo(
@@ -350,7 +355,9 @@ int WINAPI Pudge_WSARecvFrom(
 	LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 )
 {
-	if (!config.ProxyMedia) {
+	// MODE 1 - PROXY MODE
+	// IF MODE != 1 - DONTTOUCH RECV
+	if (config.UDPMode != 1) {
 		return Real_WSARecvFrom(
 			s,
 			lpBuffers,

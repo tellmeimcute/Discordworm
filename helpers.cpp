@@ -46,7 +46,7 @@ bool parse_hex_str(const char* s, uint8_t* pbuf, size_t* size)
 bool ParseConf(DwormConfig& config) {
 
     config.ReadWriteTimeout = 5;
-    config.ProxyMedia = false;
+    config.UDPMode = 0;
     config.FakePayloadSize = sizeof(config.FakeUDPpayload);
 
     static const std::unordered_map<std::string, std::function<bool(std::string_view valuev)>> handlers = {
@@ -61,12 +61,15 @@ bool ParseConf(DwormConfig& config) {
             config.ProxyPort = htons(static_cast<uint16_t>(port));
             return true;
         }},
-        {"proxy_udp", [&config](std::string_view valuev) -> bool {
-            if (valuev == "true" || valuev == "1") {
-                config.ProxyMedia = true;
+        {"udp_mode", [&config](std::string_view valuev) -> bool {
+            if (valuev == "sendfake") {
+                config.UDPMode = 2;
             }
-            if (valuev == "false" || valuev == "0") {
-                config.ProxyMedia = false;
+            if (valuev == "proxy") {
+                config.UDPMode = 1;
+            }
+            if (valuev == "donttouch") {
+                config.UDPMode = 0;
             }
             return true;
         }},
