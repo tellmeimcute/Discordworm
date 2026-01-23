@@ -11,7 +11,7 @@
 ---
 
 ## Использование
-1. Закинуть DWrite.dll в папку %localappdata%\Discord\\{ПОСЛЕДНЯЯ_ВЕРСИЯ}\
+1. Закинуть DWrite.dll в папку %localappdata%\Discord\app-{ПОСЛЕДНЯЯ_ВЕРСИЯ}\
 2. Создать в этой же папке dwormconf.txt.
 3. Настроить конфиг:
 ```
