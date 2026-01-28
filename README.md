@@ -4,12 +4,14 @@
 Можно выбрать желаемое поведение с UDP трафиком из трех вариантов donttouch, proxy и sendfake.
 
 ## Зачем это существует?
-Я не нашел решения, которое позволяет проксировать TCP и предлагает выбор действий с UDP трафиком.
+Не хочется включать TUN, только ради дискорда.
+Да и не нашел я решения, которое позволяет проксировать TCP и предлагает выбор действий с UDP трафиком.
+Находил только либо полное проксирование, либо проксирование TCP + фейк на udp. Поэтому вот.
 
 ---
 
 ## Использование
-1. Закинуть DWrite.dll в папку %localappdata%\Discord\{ПОСЛЕДНЯЯ_ВЕРСИЯ}\
+1. Закинуть DWrite.dll в папку %localappdata%\Discord\app-{ПОСЛЕДНЯЯ_ВЕРСИЯ}\
 2. Создать в этой же папке dwormconf.txt.
 3. Настроить конфиг:
 ```
@@ -24,3 +26,9 @@ fake_udp_payload=0xHEX
 При выборе sendfake: на discord_ip_discovery будет отсылаться фейк с содержимым указанным в fake_udp_payload, по умолчанию 256 нулей.
 
 **fake_udp_payload** - HEX строка максимум 256 байт. Если не указано будет 256 нулей.
+
+
+## Inspiration
+[zapret2](https://github.com/bol-van/zapret2)
+[force-proxy](https://github.com/runetfreedom/force-proxy)
+[discord drover](https://github.com/hdrover/discord-drover)
