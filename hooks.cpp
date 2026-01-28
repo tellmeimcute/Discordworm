@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <shared_mutex>
 #include <set>
-#include <map>
+#include <unordered_map>
 #include <vector>
 #include <WinSock2.h>
 #include <WS2tcpip.h>
@@ -17,7 +17,7 @@ bint_t Real_bind = bind;
 closesocket_t Real_closesocket = closesocket;
 
 std::shared_mutex SockMtx{};
-std::map<SOCKET, udp_association_t> activeAssociations{};
+std::unordered_map<SOCKET, udp_association_t> activeAssociations{};
 
 bool IsUDPSocket(SOCKET s)
 {
@@ -252,8 +252,8 @@ int WINAPI Pudge_closesocket(SOCKET s) {
 	{
 		std::unique_lock<std::shared_mutex> write_lock(SockMtx);
 		if (activeAssociations.contains(s)) {
-			Real_closesocket(activeAssociations[s].controlSocket);
 			activeAssociations.erase(s);
+			Real_closesocket(activeAssociations[s].controlSocket);
 		}
 	}
 
